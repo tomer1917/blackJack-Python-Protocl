@@ -121,7 +121,7 @@ class BlackjackServer:
                 print("Invalid payload from client.")
                 return
 
-            if decision == "Hit":
+            if decision == "Hittt":
                 new_card = deck.pop()
                 player_cards.append(new_card)
                 player_value = self.calculate_hand(player_cards)

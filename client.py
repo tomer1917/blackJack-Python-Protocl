@@ -14,6 +14,9 @@ class BlackjackClient:
         self.rounds_played = 0
 
     def find_server(self):
+        """
+        Listens for UDP offers. Returns True if a server is found, False otherwise.
+        """
         print("Client started, listening for offer requests...")
         udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
@@ -33,9 +36,10 @@ class BlackjackClient:
                     self.server_address = (addr[0], server_port)
                     self.server_name = server_name
                     udp_socket.close()
-                    return
+                    return True
             except Exception as e:
                 print(f"Error receiving offer: {e}")
+                # We don't return False here, we keep listening
 
     def connect_to_server(self):
         try:
@@ -50,28 +54,28 @@ class BlackjackClient:
 
     def play_game(self):
         try:
-            rounds_request = int(input("How many rounds do you want to play? "))
-        except ValueError:
-            print("Invalid input, defaulting to 1 round.")
-            rounds_request = 1
+            # We use input() which blocks. This is fine for a simple client.
+            # In a GUI or advanced client, this might need to be non-blocking.
+            try:
+                rounds_request = int(input("How many rounds do you want to play? "))
+            except ValueError:
+                print("Invalid input, defaulting to 1 round.")
+                rounds_request = 1
 
-        req_msg = protocol.pack_request(rounds_request, self.team_name)
-        self.tcp_socket.sendall(req_msg)
+            req_msg = protocol.pack_request(rounds_request, self.team_name)
+            self.tcp_socket.sendall(req_msg)
 
-        game_active = True
+            game_active = True
 
-        # State tracking
-        cards_received_counter = 0
-        my_turn = True
+            # State tracking
+            cards_received_counter = 0
+            my_turn = True
 
-        # TCP Buffer
-        data_buffer = b""
-        # Calculate expected message size (Magic+Type+Result+Rank+Suit = 4+1+1+2+1 = 9 bytes)
-        MSG_SIZE = 9
+            # TCP Buffer
+            data_buffer = b""
+            MSG_SIZE = 9
 
-        try:
             while game_active:
-                # 1. Read from network and append to buffer
                 try:
                     chunk = self.tcp_socket.recv(protocol.BUFFER_SIZE)
                     if not chunk:
@@ -82,39 +86,33 @@ class BlackjackClient:
                     print(f"Receive error: {e}")
                     break
 
-                # 2. Process ALL complete messages in the buffer
                 while len(data_buffer) >= MSG_SIZE:
-                    # Extract one packet
                     packet = data_buffer[:MSG_SIZE]
-                    data_buffer = data_buffer[MSG_SIZE:]  # Remove it from buffer
+                    data_buffer = data_buffer[MSG_SIZE:]
 
                     valid, result, rank, suit = protocol.unpack_payload_server(packet)
 
                     if not valid:
-                        print("Error: Invalid message format (Magic Cookie mismatch?).")
-                        continue  # Skip bad packet
+                        print("Error: Invalid message format.")
+                        continue
 
                     card_str = self.format_card(rank, suit)
 
                     if result == protocol.RESULT_ACTIVE:
                         if my_turn:
                             cards_received_counter += 1
-
                             if cards_received_counter <= 2:
                                 print(f"Your card: {card_str}")
-
                             elif cards_received_counter == 3:
                                 print(f"Dealer's visible card: {card_str}")
                                 if self.prompt_user() == "Stand":
                                     my_turn = False
-
                             else:
                                 print(f"Your card: {card_str}")
                                 if self.prompt_user() == "Stand":
                                     my_turn = False
                         else:
                             print(f"Dealer draws: {card_str}")
-
                     else:
                         # Round Ended
                         self.rounds_played += 1
@@ -134,7 +132,6 @@ class BlackjackClient:
 
                         print("-" * 20)
 
-                        # Reset for next round
                         cards_received_counter = 0
                         my_turn = True
 
@@ -144,15 +141,23 @@ class BlackjackClient:
             if self.tcp_socket:
                 self.tcp_socket.close()
 
-            # Print Stats
             win_rate = (self.wins / self.rounds_played * 100) if self.rounds_played > 0 else 0
             print(f"Finished playing {self.rounds_played} rounds, win rate: {win_rate:.1f}%")
+            print("--- resetting client ---")
+
+            # Reset stats for the new session?
+            # The assignment implies "updates its statistics... and moves on", usually per session.
+            # We will reset stats for a fresh connection.
+            self.wins = 0
+            self.rounds_played = 0
 
     def prompt_user(self):
-        action = input("Type 'Hit' to draw another card, or 'Stand' to hold: ").strip()
+        print("Type 'Hit' to draw another card, or 'Stand' to hold: ", end='')
+        sys.stdout.flush()  # Ensure prompt appears before input
+        action = input().strip()
         while action not in ["Hit", "Stand"]:
-            print("Invalid choice.")
-            action = input("Type 'Hit' to draw another card, or 'Stand' to hold: ").strip()
+            print("Invalid choice. Please type 'Hit' or 'Stand'.")
+            action = input().strip()
 
         payload = protocol.pack_payload_client(action)
         self.tcp_socket.sendall(payload)
@@ -166,7 +171,11 @@ class BlackjackClient:
 
 
 if __name__ == "__main__":
-    client = BlackjackClient(team_name="Yossi's stars")
-    client.find_server()
-    if client.connect_to_server():
-        client.play_game()
+    # "Both server and client applications are supposed to run forever"
+    while True:
+        client = BlackjackClient(team_name="Yossi's stars")
+        client.find_server()
+        if client.connect_to_server():
+            client.play_game()
+        else:
+            print("Connection failed, retrying...")

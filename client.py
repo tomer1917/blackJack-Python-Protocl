@@ -1,6 +1,7 @@
 import socket
 import protocol
 import sys
+import struct
 
 
 class BlackjackClient:
@@ -9,6 +10,8 @@ class BlackjackClient:
         self.tcp_socket = None
         self.server_address = None
         self.server_name = None
+        self.wins = 0
+        self.rounds_played = 0
 
     def find_server(self):
         print("Client started, listening for offer requests...")
@@ -46,78 +49,116 @@ class BlackjackClient:
             return False
 
     def play_game(self):
-        # Ask user for number of rounds
         try:
-            rounds = int(input("How many rounds do you want to play? "))
+            rounds_request = int(input("How many rounds do you want to play? "))
         except ValueError:
             print("Invalid input, defaulting to 1 round.")
-            rounds = 1
+            rounds_request = 1
 
-        # 1. Send Request Message
-        req_msg = protocol.pack_request(rounds, self.team_name)
+        req_msg = protocol.pack_request(rounds_request, self.team_name)
         self.tcp_socket.sendall(req_msg)
 
-        # 2. Game Loop
         game_active = True
-        cards_in_hand = 0  # Track how many cards we have in the current round
+
+        # State tracking
+        cards_received_counter = 0
+        my_turn = True
+
+        # TCP Buffer
+        data_buffer = b""
+        # Calculate expected message size (Magic+Type+Result+Rank+Suit = 4+1+1+2+1 = 9 bytes)
+        MSG_SIZE = 9
 
         try:
             while game_active:
-                # Wait for server message
-                data = self.tcp_socket.recv(protocol.BUFFER_SIZE)
-                if not data:
-                    print("Server disconnected.")
+                # 1. Read from network and append to buffer
+                try:
+                    chunk = self.tcp_socket.recv(protocol.BUFFER_SIZE)
+                    if not chunk:
+                        print("Server disconnected.")
+                        break
+                    data_buffer += chunk
+                except Exception as e:
+                    print(f"Receive error: {e}")
                     break
 
-                valid, result, rank, suit = protocol.unpack_payload_server(data)
+                # 2. Process ALL complete messages in the buffer
+                while len(data_buffer) >= MSG_SIZE:
+                    # Extract one packet
+                    packet = data_buffer[:MSG_SIZE]
+                    data_buffer = data_buffer[MSG_SIZE:]  # Remove it from buffer
 
-                if not valid:
-                    print("Error: Invalid message received from server.")
-                    break
+                    valid, result, rank, suit = protocol.unpack_payload_server(packet)
 
-                # Format the card string
-                card_str = self.format_card(rank, suit)
+                    if not valid:
+                        print("Error: Invalid message format (Magic Cookie mismatch?).")
+                        continue  # Skip bad packet
 
-                if result == protocol.RESULT_ACTIVE:
-                    # We received a player card
-                    cards_in_hand += 1
-                    print(f"Your card: {card_str}")
+                    card_str = self.format_card(rank, suit)
 
-                    # LOGIC FIX: Only ask for input if we have at least 2 cards
-                    if cards_in_hand < 2:
-                        continue
+                    if result == protocol.RESULT_ACTIVE:
+                        if my_turn:
+                            cards_received_counter += 1
 
-                        # Decide: Hit or Stand
-                    action = input("Type 'Hit' to draw another card, or 'Stand' to hold: ").strip()
-                    while action not in ["Hit", "Stand"]:
-                        print("Invalid choice. Please type 'Hit' or 'Stand'.")
-                        action = input("Type 'Hit' to draw another card, or 'Stand' to hold: ").strip()
+                            if cards_received_counter <= 2:
+                                print(f"Your card: {card_str}")
 
-                    payload = protocol.pack_payload_client(action)
-                    self.tcp_socket.sendall(payload)
+                            elif cards_received_counter == 3:
+                                print(f"Dealer's visible card: {card_str}")
+                                if self.prompt_user() == "Stand":
+                                    my_turn = False
 
-                else:
-                    # Round Ended (Win/Loss/Tie)
-                    print(f"Dealer's card: {card_str}")
+                            else:
+                                print(f"Your card: {card_str}")
+                                if self.prompt_user() == "Stand":
+                                    my_turn = False
+                        else:
+                            print(f"Dealer draws: {card_str}")
 
-                    if result == protocol.RESULT_WIN:
-                        print("You won this round! :)")
-                    elif result == protocol.RESULT_LOSS:
-                        print("You lost this round. :(")
-                    elif result == protocol.RESULT_TIE:
-                        print("It's a tie.")
+                    else:
+                        # Round Ended
+                        self.rounds_played += 1
 
-                    print("-" * 20)
-                    cards_in_hand = 0  # Reset counter for the next round
+                        if my_turn:
+                            print(f"Your card: {card_str}")
+                        else:
+                            print(f"Dealer's final card: {card_str}")
+
+                        if result == protocol.RESULT_WIN:
+                            print("You won this round! :)")
+                            self.wins += 1
+                        elif result == protocol.RESULT_LOSS:
+                            print("You lost this round. :(")
+                        elif result == protocol.RESULT_TIE:
+                            print("It's a tie.")
+
+                        print("-" * 20)
+
+                        # Reset for next round
+                        cards_received_counter = 0
+                        my_turn = True
 
         except Exception as e:
             print(f"Game error: {e}")
         finally:
-            self.tcp_socket.close()
-            print("Disconnected from server.")
+            if self.tcp_socket:
+                self.tcp_socket.close()
+
+            # Print Stats
+            win_rate = (self.wins / self.rounds_played * 100) if self.rounds_played > 0 else 0
+            print(f"Finished playing {self.rounds_played} rounds, win rate: {win_rate:.1f}%")
+
+    def prompt_user(self):
+        action = input("Type 'Hit' to draw another card, or 'Stand' to hold: ").strip()
+        while action not in ["Hit", "Stand"]:
+            print("Invalid choice.")
+            action = input("Type 'Hit' to draw another card, or 'Stand' to hold: ").strip()
+
+        payload = protocol.pack_payload_client(action)
+        self.tcp_socket.sendall(payload)
+        return action
 
     def format_card(self, rank, suit):
-        # Helper to make output nice
         ranks = {1: 'Ace', 11: 'Jack', 12: 'Queen', 13: 'King'}
         rank_str = ranks.get(rank, str(rank))
         suit_str = protocol.SUITS.get(suit, 'Unknown')
@@ -126,10 +167,6 @@ class BlackjackClient:
 
 if __name__ == "__main__":
     client = BlackjackClient(team_name="Yossi's stars")
-
-    # Discovery
     client.find_server()
-
-    # Connection & Gameplay
     if client.connect_to_server():
         client.play_game()

@@ -1,8 +1,14 @@
 import socket
 import protocol
 import sys
-import struct
+import os
 
+try:
+    import pygame
+    MUSIC_AVAILABLE = True
+except ImportError:
+    MUSIC_AVAILABLE = False
+    print("Warning: 'pygame' not found. Music will not play. (pip install pygame)")
 
 class BlackjackClient:
     def __init__(self, team_name="Yossi's stars"):
@@ -12,6 +18,28 @@ class BlackjackClient:
         self.server_name = None
         self.wins = 0
         self.rounds_played = 0
+        self.play_music("music3.mp3")
+
+    def play_music(self, filename):
+        """
+        Bonus: Plays background music in a loop.
+        """
+        if not MUSIC_AVAILABLE:
+            return
+
+        try:
+            if os.path.exists(filename):
+                pygame.mixer.init()
+                pygame.mixer.music.load(filename)
+                # loops=-1 means loop forever
+                pygame.mixer.music.play(loops=-1)
+                # Optional: Lower volume so it's not too loud (0.0 to 1.0)
+                pygame.mixer.music.set_volume(0.5)
+                print(f"🎵 Playing background music: {filename}")
+            else:
+                print(f"Warning: Music file '{filename}' not found.")
+        except Exception as e:
+            print(f"Error playing music: {e}")
 
     def find_server(self):
         """

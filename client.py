@@ -18,7 +18,7 @@ class BlackjackClient:
         self.server_name = None
         self.wins = 0
         self.rounds_played = 0
-        self.play_music("music3.mp3")
+        self.play_music("akeboshi wind.mp3")
 
     def play_music(self, filename):
         """
